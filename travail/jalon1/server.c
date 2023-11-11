@@ -13,17 +13,19 @@
 
 #define MAX_CNX 256
 
+int quit;
+
 struct Client{
     int sockfd;
     int client_num;
-    struct sockaddr client_addr;
+    struct sockaddr_in client_addr;
     struct Client *nextclient;
 };
 
 struct Client *client_list = NULL; // ici on stocke les descripteurs de fichiers, adresses et ports
 
 
-void addClient(struct Client **client_list, int client_num, int sockfd, struct sockaddr client_addr) {
+void addClient(struct Client **client_list, int client_num, int sockfd, struct sockaddr_in client_addr) {
     struct Client *client = malloc(sizeof(struct Client));
     if (client == NULL) {
         perror("malloc");
@@ -34,6 +36,26 @@ void addClient(struct Client **client_list, int client_num, int sockfd, struct s
     client->client_num = client_num;
     client->nextclient = *client_list;
     *client_list = client;
+}
+
+void removeClient(struct Client **client_list, int sockfd) {
+    struct Client *current = *client_list;
+    struct Client *prev = NULL;
+
+    while (current != NULL) {
+        if (current->sockfd == sockfd) {
+            if (prev == NULL) {
+                *client_list = current->nextclient;
+            } else {
+                prev->nextclient = current->nextclient;
+            }
+            close(current->sockfd);
+            free(current);
+            return;
+        }
+        prev = current;
+        current = current->nextclient;
+    }
 }
 
 void freeClients(struct Client *first) {
@@ -47,6 +69,7 @@ void freeClients(struct Client *first) {
 
 
 void echo_server(int sockfd, struct Client *client) {
+	quit = 0;
 	char buff[MSG_LEN];
 	while (1) {
 		// Cleaning memory
@@ -57,8 +80,9 @@ void echo_server(int sockfd, struct Client *client) {
 		}
 		// if received message is /quit
         if (strcmp(buff, "/quit\n") == 0) {
-			close(sockfd);
+			quit = 1;
 			printf("Client %d disconnected.\n",client->client_num);
+			removeClient(&client_list, sockfd);
             break; 
         }
 		printf("Message received from client %d: %s",client->client_num, buff);
@@ -102,7 +126,7 @@ int handle_bind(char *argv[]) {
 }
 
 void handle_multipleclients(int sockfd){
-	struct sockaddr client_addr;
+	struct sockaddr_in client_addr;
 	socklen_t len;
 
 	struct pollfd fds[MAX_CNX];
@@ -120,34 +144,37 @@ void handle_multipleclients(int sockfd){
 			perror("Poll\n");
 			exit(EXIT_FAILURE);
 		}
-		for (i=0;i<MAX_CNX;i++){
-			if ((fds[i].fd == fds[0].fd) && ((fds[i].revents & POLLIN) == POLLIN)){
-				int new_fd = accept(fds[0].fd,(struct sockaddr *)&client_addr,&len);
-				if (new_fd == -1){
-					perror("accept\n");
-					exit(EXIT_FAILURE);
-				}
-                printf("Client %d connected, sockfd = %d :\n",client_num,new_fd);
-                addClient(&client_list, client_num, new_fd, client_addr);
-                client_num++;
-				
-				int cpt;
-				for (cpt=1;cpt<MAX_CNX;cpt++){
-					if (fds[cpt].fd == 0){
-						
-						fds[cpt].fd = new_fd;
-						fds[cpt].events = POLLIN;
-						fds[cpt].revents = 0;
-						break;
-					}
+		if ((fds[0].revents & POLLIN) == POLLIN){
+			int new_fd = accept(fds[0].fd,(struct sockaddr *)&client_addr,&len);
+			if (new_fd == -1){
+				perror("accept\n");
+				exit(EXIT_FAILURE);
+			}
+			printf("Client %d connected, sockfd = %d :\n",client_num,new_fd);
+			addClient(&client_list, client_num, new_fd, client_addr);
+			client_num++;
+			
+			int cpt;
+			for (cpt=1;cpt<MAX_CNX;cpt++){
+				if (fds[cpt].fd == 0){
+					
+					fds[cpt].fd = new_fd;
+					fds[cpt].events = POLLIN;
+					fds[cpt].revents = 0;
+					break;
 				}
 			}
+		}
+		for (i=0;i<MAX_CNX;i++){
 			if ((fds[i].fd != fds[0].fd) && ((fds[i].revents & POLLIN) == POLLIN)){
 				
                 struct Client *current = client_list;
                 while (current != NULL) {
                     if (current->sockfd == fds[i].fd) {
                         echo_server(fds[i].fd,current);
+						if (quit){
+							fds[i].events = 0;
+						}
                         break; 
                     }
                     current = current->nextclient;
@@ -165,19 +192,12 @@ int main(int argc, char*argv[]) {
         fprintf(stderr, "Usage: %s <server_port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-	//struct sockaddr cli;
-	int sfd; //connfd;
-	//socklen_t len;
+	int sfd;
 	sfd = handle_bind(argv);
 	if ((listen(sfd, SOMAXCONN)) != 0) {
 		perror("listen()\n");
 		exit(EXIT_FAILURE);
 	}
-	/*len = sizeof(cli);
-	if ((connfd = accept(sfd, (struct sockaddr*) &cli, &len)) < 0) {
-		perror("accept()\n");
-		exit(EXIT_FAILURE);
-	}*/
 	handle_multipleclients(sfd);
     freeClients(client_list);
 

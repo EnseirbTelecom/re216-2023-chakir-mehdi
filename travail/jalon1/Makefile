@@ -1,6 +1,6 @@
 CFLAGS=-Wall
 CC=gcc
-LDFLAGS=-lpthread
+#LDFLAGS=-lpthread
 all: client server
 	$(CC) -o client $(CFLAGS) client.c;
 	$(CC) -o server $(CFLAGS) server.c;
