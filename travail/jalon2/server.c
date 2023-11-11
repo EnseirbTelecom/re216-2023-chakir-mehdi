@@ -14,6 +14,8 @@
 
 #define MAX_CNX 256
 
+int quit;
+
 struct Client{
     int sockfd;
     int client_num;
@@ -79,6 +81,7 @@ void freeClients(struct Client *first) {
 
 
 void echo_server(int sockfd, struct Client *client_list) {
+	quit = 0;
     struct message msgstruct;
     char buff[MSG_LEN];
     char to_send[MSG_LEN];
@@ -101,12 +104,11 @@ void echo_server(int sockfd, struct Client *client_list) {
         if (msgstruct.type == NICKNAME_NEW) {
 			if (nicknameExists(client_list,msgstruct.infos)) {
 				snprintf(to_send, MSG_LEN, "User \"%s\" exits already\n", msgstruct.infos);
-				strcpy(msgstruct.nick_sender,"");
-				strcpy(msgstruct.infos,"");
+				strcpy(msgstruct.nick_sender,buff);
 			}
 			else{
 				current = find_client_fd(sockfd, client_list);
-				strcpy(current->nickname, buff);
+				strcpy(current->nickname, msgstruct.nick_sender);
 				strcpy(to_send, "Welcome to chat : ");
 				strcat(to_send, current->nickname);
 				strcat(to_send, "\n");
@@ -159,12 +161,16 @@ void echo_server(int sockfd, struct Client *client_list) {
 				if (send(sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 					break;
 				}
-				if (send(sockfd, "Message sent successfully to client desired", MSG_LEN, 0) <= 0) {
+				char inform[MSG_LEN];
+				sprintf(inform, "Message sent successfully to client \"%s\"\n", msgstruct.infos);
+				if (send(sockfd, inform, MSG_LEN, 0) <= 0) {
 				break;
 			}
 			}
 		} else if (msgstruct.type == ECHO_SEND) {
-			strcpy(to_send, buff);
+			memset(to_send, 0, MSG_LEN);
+			strcat(to_send, "Received : ");
+			strcat(to_send,buff);
 		} else if (msgstruct.type == BROADCAST_SEND) {
 			struct Client *list = client_list;
 			current = find_client_fd(sockfd,client_list);
@@ -190,10 +196,11 @@ void echo_server(int sockfd, struct Client *client_list) {
 
 		// if received message is /quit
         if (strcmp(buff, "/quit\n") == 0) {
+			quit = 1;
 			usr = find_client_fd(sockfd, client_list);
+			printf("Client \"%s\" disconnected.\n",usr->nickname);
 			strcpy(usr->nickname,"");
 			close(sockfd);
-			printf("Client disconnected.\n");
             break; 
         }
         printf("pld_len: %i / nick_sender: %s / type: %s / infos: %s\n", msgstruct.pld_len, msgstruct.nick_sender, msg_type_str[msgstruct.type], msgstruct.infos);
@@ -264,32 +271,37 @@ void handle_multipleclients(int sockfd){
 			perror("Poll\n");
 			exit(EXIT_FAILURE);
 		}
-		for (i=0;i<MAX_CNX;i++){
-			if ((fds[i].fd == fds[0].fd) && ((fds[i].revents & POLLIN) == POLLIN)){
-				int new_fd = accept(fds[0].fd,(struct sockaddr*)&client_addr,&len);
-				if (new_fd == -1){
-					perror("accept\n");
-					exit(EXIT_FAILURE);
-				}
-				printf("Client %d connected, sockfd = %d :\n",client_num,new_fd);
-                addClient(&client_list, client_num, new_fd, &client_addr);
-                client_num++;
-				
-				int cpt;
-				for (cpt=1;cpt<MAX_CNX;cpt++){
-					if (fds[cpt].fd == 0){
-						
-						fds[cpt].fd = new_fd;
-						fds[cpt].events = POLLIN;
-						fds[cpt].revents = 0;
-						break;
-					}
+		if ((fds[0].revents & POLLIN) == POLLIN){
+			int new_fd = accept(fds[0].fd,(struct sockaddr*)&client_addr,&len);
+			if (new_fd == -1){
+				perror("accept\n");
+				exit(EXIT_FAILURE);
+			}
+			printf("Client %d connected, sockfd = %d :\n",client_num,new_fd);
+			if (send(new_fd,"[Server] : please login with /nick <your pseudo>\n\n",MSG_LEN,0)<=0){
+				break;
+			}
+			addClient(&client_list, client_num, new_fd, &client_addr);
+			client_num++;
+			
+			int cpt;
+			for (cpt=1;cpt<MAX_CNX;cpt++){
+				if (fds[cpt].fd == 0){
+					
+					fds[cpt].fd = new_fd;
+					fds[cpt].events = POLLIN;
+					fds[cpt].revents = 0;
+					break;
 				}
 			}
+		}
+		for (i=0;i<MAX_CNX;i++){
 			if ((fds[i].fd != fds[0].fd) && ((fds[i].revents & POLLIN) == POLLIN)){
 				
                 echo_server(fds[i].fd,client_list);
-
+				if (quit){
+					fds[i].events = 0;
+				}
 				fds[i].revents = 0;
 			}
 		}
