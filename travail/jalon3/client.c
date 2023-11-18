@@ -79,7 +79,7 @@ int initMsgStruct(struct message *msgstruct, char *buff){
             msgstruct->type = BROADCAST_SEND;
             strcpy(msgstruct->infos,"");
         }
-        else if (strcmp(command,"/create")==0){
+        else if (strcmp(command,"/create")==0 && strlen(msgstruct->nick_sender)>0){
             char *new_buff = strtok(NULL,"\n");
             
             if (is_valid_nickname(new_buff)){
@@ -98,7 +98,7 @@ int initMsgStruct(struct message *msgstruct, char *buff){
             msgstruct->type = MULTICAST_LIST;
             strcpy(msgstruct->infos,"");
         }
-        else if (strcmp(command,"/join")==0){
+        else if (strcmp(command,"/join")==0 && strlen(msgstruct->nick_sender)>0){
             char *new_buff = strtok(NULL,"\n");
 
             msgstruct->type = MULTICAST_JOIN;
@@ -116,11 +116,11 @@ int initMsgStruct(struct message *msgstruct, char *buff){
                 msgstruct->type = MULTICAST_QUIT;
                 strcpy(msgstruct->infos,new_buff);
             }
-            /*else{
+            else{
                 msgstruct->pld_len = strlen(buff);
                 msgstruct->type = ECHO_SEND;
                 strcpy(msgstruct->infos,"");
-            }*/
+            }
         }
         else {
             if (clientInChannel){
@@ -234,6 +234,16 @@ void echo_client(int sockfd) {
 
                 printf("Message sent!\n");
             }
+            else if (strlen(msgstruct.nick_sender) == 0 && strcmp(buff,"/quit\n")==0){
+                if (send(sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
+                    break;
+                }
+                if (send(sockfd, buff,  strlen(buff), 0) <= 0) {
+                        break;
+                    }
+                printf("Message sent. Disconnecting...\n");
+                break;
+            }
             else{
                 printf("Please enter your nickname first by using /nick <your pseudo>\n");
                 printf("\n>> ");
@@ -257,22 +267,28 @@ void echo_client(int sockfd) {
 			    break;
 		    }
 
-            if (strcmp(msgstruct.nick_sender,client_nickname)== 0 &&  msgstruct.type != MULTICAST_LIST && msgstruct.type != MULTICAST_SEND && msgstruct.type != MULTICAST_CREATE && msgstruct.type != MULTICAST_JOIN && msgstruct.type != MULTICAST_QUIT ){
-                printf("pld_len: %i / nick_sender: %s / type: %s / infos: %s\n", msgstruct.pld_len, msgstruct.nick_sender, msg_type_str[msgstruct.type], msgstruct.infos);
-            }
-            printf("%s\n", buff);
-            printf(">> ");
-            fflush(stdout);
-            if (msgstruct.type != NICKNAME_NEW){
-                strcpy(msgstruct.nick_sender,client_nickname);
-            }
             if(msgstruct.type == MULTICAST_CREATE || msgstruct.type == MULTICAST_JOIN || msgstruct.type == MULTICAST_QUIT){
                 if (!strcmp(msgstruct.inChannel,"0")){
                     clientInChannel = 0;
                 }
             }
-             if(msgstruct.type == MULTICAST_CREATE || msgstruct.type == MULTICAST_JOIN){
+            if(msgstruct.type == MULTICAST_CREATE || msgstruct.type == MULTICAST_JOIN){
                 strcpy(channel_name,msgstruct.infos);
+            }
+
+            if (strcmp(msgstruct.nick_sender,client_nickname)== 0 &&  msgstruct.type != MULTICAST_LIST && msgstruct.type != MULTICAST_SEND && msgstruct.type != MULTICAST_CREATE && msgstruct.type != MULTICAST_JOIN && msgstruct.type != MULTICAST_QUIT ){
+                printf("pld_len: %i / nick_sender: %s / type: %s / infos: %s\n", msgstruct.pld_len, msgstruct.nick_sender, msg_type_str[msgstruct.type], msgstruct.infos);
+            }
+            printf("%s\n", buff);
+            if (clientInChannel){
+                printf("[%s] > ",channel_name);
+            }
+            else{ 
+                printf(">> ");
+            }
+            fflush(stdout);
+            if (msgstruct.type != NICKNAME_NEW){
+                strcpy(msgstruct.nick_sender,client_nickname);
             }
         }
     }

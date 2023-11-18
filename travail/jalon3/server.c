@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <time.h>
+#include <signal.h>
 
 #include "msg_struct.h"
 #include "common.h"
@@ -15,6 +16,8 @@
 #define MAX_CNX 256
 
 int quit;
+int quit_flag = 0;
+int sfd; 
 
 struct Client{
     int sockfd;
@@ -83,18 +86,30 @@ int channelnameExists(struct Channel *channel_list, char *channel_name) {
 }
 
 
-void addClient(struct Client **client_list, int client_num, int sockfd, struct sockaddr_in *infos) {
+void addClient(struct Client **client_list, int client_num, int sockfd) {
     struct Client *client = malloc(sizeof(struct Client));
     if (client == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
+
+	struct sockaddr_in infos;
+    socklen_t len = sizeof(infos);
+
+	if (getpeername(sockfd, (struct sockaddr*)&infos, &len) == -1) {
+        perror("getpeername");
+        exit(EXIT_FAILURE);
+    }
+
     client->sockfd = sockfd;
     client->client_num = client_num;
-    client->port=ntohs(infos->sin_port);
-    strcpy(client->client_addr,inet_ntoa(infos->sin_addr));
+
+    client->port=ntohs(infos.sin_port);
+    inet_ntop(AF_INET, &(infos.sin_addr), client->client_addr, INET_ADDRSTRLEN);
+
     client->nextclient = *client_list;
     strcpy(client->nickname,"");
+	strcpy(client->channel_name,"");
     *client_list = client;
 }
 
@@ -127,6 +142,14 @@ void freeChannels(struct Channel *first) {
     }
 }
 
+void handle_sigint(int sig) {
+	printf("\nReceived SIGINT. Cleaning up and exiting...\n");
+	freeClients(client_list);
+	freeChannels(channel_list);
+	close(sfd);
+    quit_flag = 1;
+	exit(EXIT_SUCCESS);
+}
 
 void echo_server(int sockfd, struct Client *client_list) {
 	quit = 0;
@@ -217,8 +240,8 @@ void echo_server(int sockfd, struct Client *client_list) {
 				char inform[MSG_LEN];
 				sprintf(inform, "Message sent successfully to client \"%s\"\n", msgstruct.infos);
 				if (send(sockfd, inform, MSG_LEN, 0) <= 0) {
-				break;
-			}
+					break;
+				}
 			}
 		} else if (msgstruct.type == ECHO_SEND) {
 			memset(to_send, 0, MSG_LEN);
@@ -228,7 +251,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 			struct Client *list = client_list;
 			current = findClientBy_fd(sockfd,client_list);
 			while (list != NULL) {
-				if (list->sockfd != sockfd) {
+				if (list->sockfd != sockfd && strcmp(list->nickname,"")!=0) {
 					snprintf(to_send, 2*MSG_LEN, "[%s] : %s", current->nickname, buff);	
 					if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 						break;
@@ -247,6 +270,8 @@ void echo_server(int sockfd, struct Client *client_list) {
 			}
 		}
 		else if (msgstruct.type == MULTICAST_CREATE){
+			char temp[NICK_LEN];
+            strcpy(temp,msgstruct.infos);
 			current = findClientBy_fd(sockfd, client_list);
 			if (channelnameExists(channel_list,msgstruct.infos)) {
 				snprintf(to_send, MSG_LEN, "Channel \"%s\" exists already\n", msgstruct.infos);
@@ -261,11 +286,12 @@ void echo_server(int sockfd, struct Client *client_list) {
 				if (strlen(current->channel_name) > 0){
 					currentChannel = findChannel(current->channel_name,channel_list);
 					if (currentChannel->nb_clients > 1){
+						strcpy(msgstruct.infos,currentChannel->channel_name);
 						currentChannel->nb_clients--;
 						struct Client *list = client_list;
 						while (list != NULL) {
 							if (list->sockfd != sockfd && strcmp(list->channel_name,currentChannel->channel_name) == 0) {
-								snprintf(to_send, 2*MSG_LEN, "[%s] > INFO > %s has quit \"%s\"\n", currentChannel->channel_name, current->nickname,currentChannel->channel_name);	
+								snprintf(to_send, 2*MSG_LEN, "INFO > %s has quit \"%s\"\n", current->nickname,currentChannel->channel_name);	
 								if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 									break;
 								}
@@ -275,10 +301,10 @@ void echo_server(int sockfd, struct Client *client_list) {
 							}
 							list = list->nextclient;
 						}
-						snprintf(to_send, MSG_LEN, "You have created channel \"%s\"\n[%s] > You have joined \"%s\"\n", msgstruct.infos, msgstruct.infos, msgstruct.infos);
+						snprintf(to_send, MSG_LEN, "You have created channel \"%s\"\n[%s] > You have joined \"%s\"\n", temp, temp, temp);
 					}
 					else{
-						snprintf(to_send, 2*MSG_LEN, "INFO > You were the last user in this channel, \"%s\" has been destroyed\n\nYou have created channel \"%s\"\n[%s] > You have joined \"%s\"\n", current->channel_name,msgstruct.infos, msgstruct.infos, msgstruct.infos);
+						snprintf(to_send, 2*MSG_LEN, "INFO > You were the last user in this channel, \"%s\" has been destroyed\n\nYou have created channel \"%s\"\n[%s] > You have joined \"%s\"\n", current->channel_name,temp, temp, temp);
 						strcpy(currentChannel->channel_name,"");
 						currentChannel->nb_clients = 0;
 					}
@@ -286,10 +312,13 @@ void echo_server(int sockfd, struct Client *client_list) {
 				else{
 					snprintf(to_send, MSG_LEN, "You have created channel \"%s\"\n[%s] > You have joined \"%s\"\n", msgstruct.infos, msgstruct.infos, msgstruct.infos);
 				}
+				strcpy(msgstruct.infos,temp);
 				strcpy(current->channel_name, msgstruct.infos);
 			}
 		}
 		else if (msgstruct.type == MULTICAST_JOIN){
+			char temp[NICK_LEN];
+            strcpy(temp,msgstruct.infos);
 			current = findClientBy_fd(sockfd, client_list);
 			if (!channelnameExists(channel_list,msgstruct.infos)) {
 				snprintf(to_send, MSG_LEN, "Channel \"%s\" does not exist !\n", msgstruct.infos);
@@ -310,7 +339,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 					
 					while (list != NULL) {
 						if (list->sockfd != sockfd && strcmp(list->channel_name,currentChannel->channel_name) == 0) {
-							snprintf(to_send2, 2*MSG_LEN, "[%s] > INFO > %s has joined \"%s\"\n", currentChannel->channel_name, current->nickname,currentChannel->channel_name);	
+							snprintf(to_send2, 2*MSG_LEN, "INFO > %s has joined \"%s\"\n",current->nickname,currentChannel->channel_name);	
 							if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 								break;
 							}
@@ -328,6 +357,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 					}
 					else{
 						currentChannel = findChannel(current->channel_name,channel_list);
+						strcpy(msgstruct.infos,currentChannel->channel_name);
 						
 						if (currentChannel->nb_clients > 1){
 
@@ -336,7 +366,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 							
 							while (list != NULL) {
 								if (list->sockfd != sockfd && strcmp(list->channel_name,currentChannel->channel_name) == 0) {
-									snprintf(to_send2, 2*MSG_LEN, "[%s] > INFO > %s has quit \"%s\"\n", currentChannel->channel_name, current->nickname,currentChannel->channel_name);	
+									snprintf(to_send2, 2*MSG_LEN, "INFO > %s has quit \"%s\"\n", current->nickname,currentChannel->channel_name);	
 									if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 										break;
 									}
@@ -346,10 +376,10 @@ void echo_server(int sockfd, struct Client *client_list) {
 								}
 								list = list->nextclient;
 							}
-							snprintf(to_send, MSG_LEN, "[%s] > INFO > You have joined \"%s\"\n", msgstruct.infos, msgstruct.infos);
+							snprintf(to_send, MSG_LEN, "[%s] > INFO > You have joined \"%s\"\n", temp, temp);
 						}
 						else{
-							snprintf(to_send, 2*MSG_LEN, "INFO > You were the last user in this channel, \"%s\" has been destroyed\n\n[%s] > You have joined \"%s\"\n", current->channel_name, msgstruct.infos, msgstruct.infos);
+							snprintf(to_send, 2*MSG_LEN, "INFO > You were the last user in this channel, \"%s\" has been destroyed\n\n[%s] > You have joined \"%s\"\n", current->channel_name, temp, temp);
 							strcpy(currentChannel->channel_name,"");
 							currentChannel->nb_clients = 0;
 						}
@@ -358,6 +388,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 				else{
 					snprintf(to_send, MSG_LEN, "[%s] > INFO > You have joined \"%s\"\n", msgstruct.infos, msgstruct.infos);
 				}
+				strcpy(msgstruct.infos,temp);
 				strcpy(current->channel_name, msgstruct.infos);
 			}
 		}
@@ -368,7 +399,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 			struct Client *list = client_list;						
 				while (list != NULL) {
 					if (list->sockfd != sockfd && strcmp(list->channel_name,current->channel_name) == 0) {
-						snprintf(to_send2, 2*MSG_LEN, "[%s] > %s> %s\n", current->channel_name, current->nickname,buff);	
+						snprintf(to_send2, 2*MSG_LEN, "%s> %s\n", current->nickname,buff);	
 						if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 							break;
 						}
@@ -390,7 +421,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 		else if (msgstruct.type == MULTICAST_QUIT){
 			current = findClientBy_fd(sockfd, client_list);
 			if (strcmp(current->channel_name,msgstruct.infos)!=0){
-				snprintf(to_send, 2*MSG_LEN, "[%s] > INFO> You are not in channel \"%s\". Try again using /quit %s\n", current->channel_name, msgstruct.infos,current->channel_name);
+				snprintf(to_send, 2*MSG_LEN, "INFO> You are not in channel \"%s\". Try again using /quit %s\n", msgstruct.infos,current->channel_name);
 			}
 			else{
 				currentChannel = findChannel(current->channel_name,channel_list);
@@ -402,7 +433,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 					
 					while (list != NULL) {
 						if (list->sockfd != sockfd && strcmp(list->channel_name,currentChannel->channel_name) == 0) {
-							snprintf(to_send2, 2*MSG_LEN, "[%s] > INFO > %s has quit \"%s\"\n", currentChannel->channel_name, current->nickname,currentChannel->channel_name);	
+							snprintf(to_send2, 2*MSG_LEN, "INFO > %s has quit \"%s\"\n", current->nickname,currentChannel->channel_name);	
 							if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 								break;
 							}
@@ -449,7 +480,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 						struct Client *list = client_list;
 						while (list != NULL) {
 							if (list->sockfd != sockfd && strcmp(list->channel_name,currentChannel->channel_name) == 0) {
-								snprintf(to_send, 2*MSG_LEN, "[%s] > INFO > %s has disconnected from the server, and therefore has quit channel \"%s\"\n", currentChannel->channel_name, usr->nickname,currentChannel->channel_name);	
+								snprintf(to_send, 2*MSG_LEN, "INFO > %s has disconnected from the server, and therefore has quit channel \"%s\"\n", usr->nickname,currentChannel->channel_name);	
 								if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 									break;
 								}
@@ -532,7 +563,7 @@ void handle_multipleclients(int sockfd){
 	int i;
     int client_num = 1;
 	
-	while(1){
+	while(!quit_flag){
 		if (poll(fds, MAX_CNX,-1) == -1){
 			perror("Poll\n");
 			exit(EXIT_FAILURE);
@@ -547,7 +578,7 @@ void handle_multipleclients(int sockfd){
 			if (send(new_fd,"[Server] : please login with /nick <your pseudo>\n\n",MSG_LEN,0)<=0){
 				break;
 			}
-			addClient(&client_list, client_num, new_fd, &client_addr);
+			addClient(&client_list, client_num, new_fd);
 			client_num++;
 			
 			int cpt;
@@ -580,16 +611,13 @@ int main(int argc, char*argv[]) {
         fprintf(stderr, "Usage: %s <server_port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-	int sfd; 
 	sfd = handle_bind(argv);
 	if ((listen(sfd, SOMAXCONN)) != 0) {
 		perror("listen()\n");
 		exit(EXIT_FAILURE);
 	}
-	handle_multipleclients(sfd);
-    freeClients(client_list);
-	freeChannels(channel_list);
+	signal(SIGINT, handle_sigint);
 
-	close(sfd);
+	handle_multipleclients(sfd);
 	return EXIT_SUCCESS;
 }
