@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <poll.h>
 #include <time.h>
+#include <signal.h>
 
 #include "msg_struct.h"
 #include "common.h"
@@ -15,6 +16,8 @@
 #define MAX_CNX 256
 
 int quit;
+int quit_flag = 0;
+int sfd; 
 
 struct Client{
     int sockfd;
@@ -27,21 +30,21 @@ struct Client{
 
 struct Client *client_list = NULL; // ici on stocke les descripteurs de fichiers, adresses et ports
 
-struct Client *find_client_fd(int sockfd,struct Client *client_list){
+struct Client *findClientBy_fd(int sockfd,struct Client *client_list){
   if (client_list->sockfd==sockfd){
     return client_list;
   }
-  return find_client_fd(sockfd,client_list->nextclient);
+  return findClientBy_fd(sockfd,client_list->nextclient);
 }
 
-struct Client *find_client_nickname(char *nickname,struct Client *client_list){
+struct Client *findClientBy_nickname(char *nickname,struct Client *client_list){
 	if (client_list == NULL) {
         return NULL; 
     }
     if (strcmp(client_list->nickname,nickname) == 0){
         return client_list;
     }
-    return find_client_nickname(nickname,client_list->nextclient); 
+    return findClientBy_nickname(nickname,client_list->nextclient); 
 }
 
 int nicknameExists(struct Client *client_list, char *nickname) {
@@ -55,16 +58,27 @@ int nicknameExists(struct Client *client_list, char *nickname) {
 }
 
 
-void addClient(struct Client **client_list, int client_num, int sockfd, struct sockaddr_in *infos) {
+void addClient(struct Client **client_list, int client_num, int sockfd) {
     struct Client *client = malloc(sizeof(struct Client));
     if (client == NULL) {
         perror("malloc");
         exit(EXIT_FAILURE);
     }
+
+	struct sockaddr_in infos;
+    socklen_t len = sizeof(infos);
+
+	if (getpeername(sockfd, (struct sockaddr*)&infos, &len) == -1) {
+        perror("getpeername");
+        exit(EXIT_FAILURE);
+    }
+
     client->sockfd = sockfd;
     client->client_num = client_num;
-    client->port=ntohs(infos->sin_port);
-    strcpy(client->client_addr,inet_ntoa(infos->sin_addr));
+    
+	client->port=ntohs(infos.sin_port);
+    inet_ntop(AF_INET, &(infos.sin_addr), client->client_addr, INET_ADDRSTRLEN);
+
     client->nextclient = *client_list;
     strcpy(client->nickname,"");
     *client_list = client;
@@ -79,6 +93,13 @@ void freeClients(struct Client *first) {
     }
 }
 
+void handle_sigint(int sig) {
+    printf("\nReceived SIGINT. Cleaning up and exiting...\n");
+	freeClients(client_list);
+	close(sfd);
+    quit_flag = 1;
+	exit(EXIT_SUCCESS);
+}
 
 void echo_server(int sockfd, struct Client *client_list) {
 	quit = 0;
@@ -107,7 +128,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 				strcpy(msgstruct.nick_sender,buff);
 			}
 			else{
-				current = find_client_fd(sockfd, client_list);
+				current = findClientBy_fd(sockfd, client_list);
 				strcpy(current->nickname, msgstruct.nick_sender);
 				strcpy(to_send, "Welcome to chat : ");
 				strcat(to_send, current->nickname);
@@ -129,7 +150,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 			if (!nicknameExists(client_list,msgstruct.infos)) {
 				snprintf(to_send, MSG_LEN, "User \"%s\" does not exist\n", msgstruct.infos);
 			} else {
-				current = find_client_nickname(msgstruct.infos, client_list);
+				current = findClientBy_nickname(msgstruct.infos, client_list);
 				char Port[6];
 				sprintf(Port, "%d", current->port);
 
@@ -154,8 +175,8 @@ void echo_server(int sockfd, struct Client *client_list) {
 			if (!nicknameExists(client_list,msgstruct.infos)) {
 				snprintf(to_send, 2*MSG_LEN, "User \"%s\" does not exist\n", msgstruct.infos);
 			} else {
-				usr = find_client_nickname(msgstruct.infos, client_list);
-				current = find_client_fd(sockfd,client_list);
+				usr = findClientBy_nickname(msgstruct.infos, client_list);
+				current = findClientBy_fd(sockfd,client_list);
 				sock = usr->sockfd;
 				snprintf(to_send, 2*MSG_LEN, "[%s] : %s", current->nickname, buff);
 				if (send(sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
@@ -173,9 +194,9 @@ void echo_server(int sockfd, struct Client *client_list) {
 			strcat(to_send,buff);
 		} else if (msgstruct.type == BROADCAST_SEND) {
 			struct Client *list = client_list;
-			current = find_client_fd(sockfd,client_list);
+			current = findClientBy_fd(sockfd,client_list);
 			while (list != NULL) {
-				if (list->sockfd != sockfd) {
+				if (list->sockfd != sockfd && strcmp(list->nickname,"")!=0) {
 					snprintf(to_send, 2*MSG_LEN, "[%s] : %s", current->nickname, buff);	
 					if (send(list->sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
 						break;
@@ -187,9 +208,9 @@ void echo_server(int sockfd, struct Client *client_list) {
 				list = list->nextclient;
 			}
 			if (send(sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
-					break;
-				}
-				if (send(sockfd, "Message sent successfully to all clients", MSG_LEN, 0) <= 0) {
+				break;
+			}
+			if (send(sockfd, "Message sent successfully to all clients\n", MSG_LEN, 0) <= 0) {
 				break;
 			}
 		}
@@ -197,7 +218,7 @@ void echo_server(int sockfd, struct Client *client_list) {
 		// if received message is /quit
         if (strcmp(buff, "/quit\n") == 0) {
 			quit = 1;
-			usr = find_client_fd(sockfd, client_list);
+			usr = findClientBy_fd(sockfd, client_list);
 			printf("Client \"%s\" disconnected.\n",usr->nickname);
 			strcpy(usr->nickname,"");
 			close(sockfd);
@@ -266,7 +287,7 @@ void handle_multipleclients(int sockfd){
 	int i;
     int client_num = 1;
 	
-	while(1){
+	while(!quit_flag){
 		if (poll(fds, MAX_CNX,-1) == -1){
 			perror("Poll\n");
 			exit(EXIT_FAILURE);
@@ -281,7 +302,7 @@ void handle_multipleclients(int sockfd){
 			if (send(new_fd,"[Server] : please login with /nick <your pseudo>\n\n",MSG_LEN,0)<=0){
 				break;
 			}
-			addClient(&client_list, client_num, new_fd, &client_addr);
+			addClient(&client_list, client_num, new_fd);
 			client_num++;
 			
 			int cpt;
@@ -314,15 +335,13 @@ int main(int argc, char*argv[]) {
         fprintf(stderr, "Usage: %s <server_port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-	int sfd; 
 	sfd = handle_bind(argv);
 	if ((listen(sfd, SOMAXCONN)) != 0) {
 		perror("listen()\n");
 		exit(EXIT_FAILURE);
 	}
-	handle_multipleclients(sfd);
-    freeClients(client_list);
+	signal(SIGINT, handle_sigint);
 
-	close(sfd);
+	handle_multipleclients(sfd);
 	return EXIT_SUCCESS;
 }

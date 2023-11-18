@@ -120,7 +120,7 @@ void echo_client(int sockfd) {
             // Getting message from client
             n=0;
 
-            char old_nickname[NICK_LEN];
+            char old_nickname[NICK_LEN]= "";
 
             if (strlen(msgstruct.nick_sender) > 0){
                 strcpy(old_nickname,msgstruct.nick_sender);
@@ -129,7 +129,7 @@ void echo_client(int sockfd) {
             while ((buff[n++] = getchar()) != '\n') {} // trailing '\n' will be sent
             // Filling structure
             if (!initMsgStruct(&msgstruct,buff)){
-                printf("\n\n>> ");
+                printf("\n>> ");
                 fflush(stdout);
                 continue;
             }
@@ -173,6 +173,16 @@ void echo_client(int sockfd) {
                 }
 
                 printf("Message sent!\n");
+            }
+            else if (strlen(msgstruct.nick_sender) == 0 && strcmp(buff,"/quit\n")==0){
+                if (send(sockfd, &msgstruct, sizeof(msgstruct), 0) <= 0) {
+                    break;
+                }
+                if (send(sockfd, buff,  strlen(buff), 0) <= 0) {
+                        break;
+                    }
+                printf("Message sent. Disconnecting...\n");
+                break;
             }
             else{
                 printf("Please enter your nickname first by using /nick <your pseudo>\n");
