@@ -7,13 +7,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
-
+#include <signal.h>
 
 #include "common.h"
 
 #define MAX_CNX 256
 
 int quit;
+int quit_flag = 0;
+int sfd;
 
 struct Client{
     int sockfd;
@@ -67,6 +69,13 @@ void freeClients(struct Client *first) {
     }
 }
 
+void handle_sigint(int sig) {
+	printf("\nReceived SIGINT. Cleaning up and exiting...\n");
+	freeClients(client_list);
+	close(sfd);
+    quit_flag = 1;
+	exit(EXIT_SUCCESS);
+}
 
 void echo_server(int sockfd, struct Client *client) {
 	quit = 0;
@@ -139,7 +148,7 @@ void handle_multipleclients(int sockfd){
 	int i;
     int client_num = 1;
 	
-	while(1){
+	while(!quit_flag){
 		if (poll(fds, MAX_CNX,-1) == -1){
 			perror("Poll\n");
 			exit(EXIT_FAILURE);
@@ -192,15 +201,13 @@ int main(int argc, char*argv[]) {
         fprintf(stderr, "Usage: %s <server_port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-	int sfd;
 	sfd = handle_bind(argv);
 	if ((listen(sfd, SOMAXCONN)) != 0) {
 		perror("listen()\n");
 		exit(EXIT_FAILURE);
 	}
-	handle_multipleclients(sfd);
-    freeClients(client_list);
+	signal(SIGINT, handle_sigint);
 
-	close(sfd);
+	handle_multipleclients(sfd);
 	return EXIT_SUCCESS;
 }
